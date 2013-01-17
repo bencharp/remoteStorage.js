@@ -11,19 +11,19 @@ define(['../util', './syncTransaction'], function(util, syncTransactionAdapter) 
     var store = {
       get: function(path) {
         logger.info('get', path);
-        return util.getPromise().fulfillLater(nodes[path]);
+        return util.getPromise().fulfill(nodes[path]);
       },
 
       set: function(path, node) {
         logger.info('set', path, node.data);
         nodes[path] = node;
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       },
 
       remove: function(path) {
         logger.info('remove', path);
         delete nodes[path];
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       }
     };
 
@@ -36,7 +36,7 @@ define(['../util', './syncTransaction'], function(util, syncTransactionAdapter) 
       forgetAll: function() {
         logger.info('forgetAll');
         this._nodes = nodes = {};
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       },
 
       hasKey: function(path) {

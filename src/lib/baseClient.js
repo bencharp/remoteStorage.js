@@ -81,7 +81,7 @@ define([
   });
 
   function failedPromise(error) {
-    return util.getPromise().failLater(error);
+    return util.getPromise().reject(error);
   }
 
   function set(moduleName, path, absPath, value, mimeType) {
@@ -304,7 +304,7 @@ define([
     //
     getListing: function(path) {
       if(! (util.isDir(path) || path === '')) {
-        return util.getPromise().failLater(
+        return util.getPromise().reject(
           new Error("Not a directory: " + path)
         );
       }
@@ -366,7 +366,7 @@ define([
               then(function(object) {
                 objectMap[itemPath] = object;
                 retrieveOne();
-              }, promise.fail.bind(promise));
+              }, promise.reject);
           } else {
             promise.fulfill(objectMap);
           }

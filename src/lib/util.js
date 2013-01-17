@@ -45,169 +45,6 @@ define([], function() {
     btoa = window.btoa;
   }
 
-  var Promise = function(chained) {
-    this.result = undefined;
-    this.success = undefined;
-    this.handlers = {};
-    this.__defineSetter__('onsuccess', function(fulfilledHandler) {
-      if(typeof(fulfilledHandler) !== 'function') {
-        throw "Success callback must be a function!";
-      }
-      this.handlers.fulfilled = fulfilledHandler;
-      if(! this.nextPromise) {
-        this.nextPromise = new Promise(true);
-      }
-    });
-    this.__defineSetter__('onerror', function(failedHandler) {
-      if(typeof(failedHandler) !== 'function') {
-        throw "Error callback must be a function!";
-      }
-      this.handlers.failed = failedHandler;
-      if(! this.nextPromise) {
-        this.nextPromise = new Promise(true);
-      }
-    });
-
-    // //BEGIN-DEBUG
-    // if(! chained) {
-    //   var _this = this;
-    //   var stack;
-    //   try { throw new Error(); } catch(exc) { stack = exc.stack; };
-    //   this.debugTimer = setTimeout(function() {
-    //     if(_this.result) {
-    //       // already resolved for some reason, without clearing the timer.
-    //       return;
-    //     }
-    //     if(_this.handlers.fulfilled) { // only care if someone's listening
-    //       console.error("WARNING: promise timed out, failing!", stack);
-    //       _this.fail();
-    //     }
-    //   }, 10000);
-    // }
-    // //END-DEBUG
-  };
-
-  Promise.prototype = {
-    fulfill: function() {
-      if(typeof(this.success) !== 'undefined') {
-        console.error("Fulfillment value: ", arguments);
-        throw new Error("Can't fulfill promise, already resolved as: " +
-                        (this.success ? 'fulfilled' : 'failed'));
-      }
-      //BEGIN-DEBUG
-      clearTimeout(this.debugTimer);
-      //END-DEBUG
-      this.result = util.toArray(arguments);
-      this.success = true;
-      if(! this.handlers.fulfilled) {
-        return;
-      }
-      var nextResult;
-      try {
-        nextResult = this.handlers.fulfilled.apply(this, this.result);
-      } catch(exc) {
-        if(this.nextPromise) {
-          this.nextPromise.fail(exc);
-        } else {
-          console.error("Uncaught exception: ", exc, exc.getStack());
-        }
-        return;
-      }
-      var nextPromise = this.nextPromise;
-      if(nextPromise) {
-        if(nextResult && typeof(nextResult.then) === 'function') {
-          // chain our promise after this one.
-          nextResult.then(function() {
-            nextPromise.fulfill.apply(nextPromise, arguments);
-          }, function() {
-            nextPromise.fail.apply(nextPromise, arguments);
-          });
-        } else {
-          nextPromise.fulfill(nextResult);
-        }
-      }
-    },
-
-    fail: function() {
-      if(typeof(this.success) !== 'undefined') {
-        console.error("Failure value: ", arguments);
-        throw new Error("Can't fail promise, already resolved as: " +
-                        (this.success ? 'fulfilled' : 'failed'));
-      }
-      //BEGIN-DEBUG
-      clearTimeout(this.debugTimer);
-      //END-DEBUG
-      this.result = util.toArray(arguments);
-      this.success = false;
-      if(this.handlers.failed) {
-        try {
-          this.handlers.failed.apply(this, this.result);
-        } catch(exc) {
-          if(this.nextPromise) {
-            this.nextPromise.fail(exc);
-          } else {
-            console.error("Uncaught error: ", this.result, (this.result[0] && this.result[0].stack));
-          }
-        }
-      } else if(this.nextPromise) {
-        this.nextPromise.fail.apply(this.nextPromise, this.result);
-      } else {
-        console.error("Uncaught error: ", this.result, (this.result[0] && this.result[0].stack));
-      }
-    },
-
-    fulfillLater: function() {
-      var args = util.toArray(arguments);
-      util.nextTick(function() {
-        this.fulfill.apply(this, args);
-      }.bind(this));
-      return this;
-    },
-
-    failLater: function() {
-      var args = util.toArray(arguments);
-      util.nextTick(function() {
-        this.fail.apply(this, args);
-      }.bind(this));
-      return this;
-    },
-
-    then: function(fulfilledHandler, errorHandler) {
-      this.handlers.fulfilled = fulfilledHandler;
-      this.handlers.failed = errorHandler;
-      this.nextPromise = new Promise(true);
-      return this.nextPromise;
-    },
-
-    get: function() {
-      var propertyNames = util.toArray(arguments);
-      return this.then(function(result) {
-        var promise = new Promise();
-        var values = [];
-        if(typeof(result) !== 'object') {
-          promise.failLater(new Error(
-            "Can't get properties of non-object (properties: " + 
-              propertyNames.join(', ') + ')'
-          ));
-        } else {
-          propertyNames.forEach(function(propertyName) {
-            values.push(result[propertyName]);
-          });
-          promise.fulfillLater.apply(promise, values);
-        }
-        return promise;
-      });
-    },
-
-    call: function(methodName) {
-      var args = Array.prototype.slice.call(arguments, 1);
-      return this.then(function(result) {
-        return result[methodName].apply(result, args);
-      });
-    }
-  };
-
-
   var util = {
 
     bufferToRaw: function(buffer) {
@@ -675,7 +512,95 @@ define([], function() {
     },
 
     getPromise: function() {
-      return new Promise();
+      var consumers = [], success, result;
+
+      function notifyConsumer(consumer) {
+        if(success) {
+          var nextValue;
+          if(consumer.fulfilled) {
+            try {
+              nextValue = [consumer.fulfilled.apply(null, result)];
+            } catch(exc) {
+              consumer.promise.reject(exc);
+              return;
+            }
+          } else {
+            nextValue = result;
+          }
+          if(util.isPromise(nextValue[0])) {
+            nextValue[0].then(consumer.promise.fulfill, consumer.promise.reject);
+          } else {
+            consumer.promise.fulfill.apply(null, nextValue);
+          }
+        } else {
+          if(consumer.rejected) {
+            var ret;
+            try {
+              ret = consumer.rejected.apply(null, result);
+            } catch(exc) {
+              consumer.promise.reject(exc);
+              return;
+            }
+            if(typeof(ret) !== 'undefined') {
+              if(util.isPromise(ret)) {
+                ret.then(consumer.promise.fulfill, consumer.promise.reject);
+              } else {
+                consumer.promise.fulfill(ret);
+              }
+            }
+          } else {
+            consumer.promise.reject.apply(null, result);
+          }
+        }
+      }
+
+      function resolve(succ, res) {
+        if(result) {
+          throw new Error("Can't resolve promise, already resolved!");
+        }
+        success = succ;
+        result = Array.prototype.slice.call(res);
+        setTimeout(function() {
+          var cl = consumers.length;
+          if(cl === 0 && (! success)) {
+            console.error("Possibly uncaught error: ", result);
+          }
+          for(var i=0;i<cl;i++) {
+            notifyConsumer(consumers[i]);
+          }
+          consumers = undefined;
+        }, 0);
+      }
+
+      return {
+
+        then: function(fulfilled, rejected) {
+          var consumer = {
+            fulfilled: fulfilled,
+            rejected: rejected,
+            promise: util.getPromise()
+          };
+          if(result) {
+            setTimeout(function() {
+              notifyConsumer(consumer)
+            }, 0);
+          } else {
+            consumers.push(consumer);
+          }
+          return consumer.promise;
+        },
+
+        fulfill: function() {
+          resolve(true, arguments);
+          return this;
+        },
+        
+        reject: function() {
+          resolve(false, arguments);
+          return this;
+        }
+        
+      };
     },
 
     // Function: isPromise
@@ -685,7 +610,7 @@ define([], function() {
     // That way it can interact with other implementations of Promises/A
     // as well.
     isPromise: function(object) {
-      return typeof(object) === 'object' && typeof(object.then) === 'function';
+      return object && typeof(object.then) === 'function';
     },
 
     // Function: makePromise
@@ -730,18 +655,18 @@ define([], function() {
     //   (end code)
     //
     makePromise: function(futureCallback) {
-      var promise = new Promise();
+      var promise = this.getPromise();
       util.nextTick(function() {
         try {
           var result = futureCallback(promise);
           if(result && result.then && typeof(result.then) === 'function') {
             result.then(
-              promise.fulfill.bind(promise),
-              promise.fail.bind(promise)
+              promise.fulfill,
+              promise.reject
             );
           }
         } catch(exc) {
-          promise.fail(exc);
+          promise.reject(exc);
         }
       });
       return promise;
